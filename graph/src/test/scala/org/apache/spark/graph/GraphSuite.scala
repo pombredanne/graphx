@@ -4,7 +4,7 @@ import org.scalatest.FunSuite
 
 import org.apache.spark.SparkContext
 import org.apache.spark.graph.LocalSparkContext._
-
+import org.apache.spark.rdd._
 
 class GraphSuite extends FunSuite with LocalSparkContext {
 
@@ -20,6 +20,21 @@ class GraphSuite extends FunSuite with LocalSparkContext {
     }
   }
 
+  test("Graph Creation with invalid vertices") {
+    withSpark(new SparkContext("local", "test")) { sc =>
+      val rawEdges = (0L to 98L).zip((1L to 99L) :+ 0L)
+      val edges: RDD[Edge[Int]] = sc.parallelize(rawEdges).map { case (s, t) => Edge(s, t, 1) }
+      val vertices: RDD[(Vid, Boolean)] = sc.parallelize((0L until 10L).map(id => (id, true)))
+      val graph = Graph(vertices, edges, false)
+      assert( graph.edges.count() === rawEdges.size )
+      assert( graph.vertices.count() === 100)
+      graph.triplets.map { et =>
+        assert( (et.srcId < 10 && et.srcAttr) || (et.srcId >= 10 && !et.srcAttr) )
+        assert( (et.dstId < 10 && et.dstAttr) || (et.dstId >= 10 && !et.dstAttr) )
+      }
+    }
+  }
+
   test("mapEdges") {
     withSpark(new SparkContext("local", "test")) { sc =>
       val n = 3
@@ -30,6 +45,18 @@ class GraphSuite extends FunSuite with LocalSparkContext {
       val edges = starWithEdgeAttrs.edges.map(_.copy()).collect()
       assert(edges.size === n)
       assert(edges.toSet === (1 to n).map(x => Edge(0, x, x)).toSet)
+    }
+  }
+
+  test("mapReduceTriplets") {
+    withSpark(new SparkContext("local", "test")) { sc =>
+      val n = 3
+      val star = Graph(sc.parallelize((1 to n).map(x => (0: Vid, x: Vid))))
+
+      val neighborDegreeSums = star.mapReduceTriplets(
+        edge => Array((edge.srcId, edge.dstAttr), (edge.dstId, edge.srcAttr)),
+        (a: Int, b: Int) => a + b)
+      assert(neighborDegreeSums.collect().toSet === (0 to n).map(x => (x, n)).toSet)
     }
   }
 
@@ -72,40 +99,21 @@ class GraphSuite extends FunSuite with LocalSparkContext {
     }
   }
 
-//  test("graph partitioner") {
-//    sc = new SparkContext("local", "test")
-//    val vertices = sc.parallelize(Seq(Vertex(1, "one"), Vertex(2, "two")))
-//    val edges = sc.parallelize(Seq(Edge(1, 2, "onlyedge")))
-//    var g = Graph(vertices, edges)
-//
-//    g = g.withPartitioner(4, 7)
-//    assert(g.numVertexPartitions === 4)
-//    assert(g.numEdgePartitions === 7)
-//
-//    g = g.withVertexPartitioner(5)
-//    assert(g.numVertexPartitions === 5)
-//
-//    g = g.withEdgePartitioner(8)
-//    assert(g.numEdgePartitions === 8)
-//
-//    g = g.mapVertices(x => x)
-//    assert(g.numVertexPartitions === 5)
-//    assert(g.numEdgePartitions === 8)
-//
-//    g = g.mapEdges(x => x)
-//    assert(g.numVertexPartitions === 5)
-//    assert(g.numEdgePartitions === 8)
-//
-//    val updates = sc.parallelize(Seq((1, " more")))
-//    g = g.updateVertices(
-//      updates,
-//      (v, u: Option[String]) => if (u.isDefined) v.data + u.get else v.data)
-//    assert(g.numVertexPartitions === 5)
-//    assert(g.numEdgePartitions === 8)
-//
-//    g = g.reverse
-//    assert(g.numVertexPartitions === 5)
-//    assert(g.numEdgePartitions === 8)
-//
-//  }
+
+  test("VertexSetRDD") {
+    withSpark(new SparkContext("local", "test")) { sc =>
+      val a = sc.parallelize((0 to 100).map(x => (x.toLong, x.toLong)), 5)
+      val b = VertexSetRDD(a).mapValues(x => -x)
+      assert(b.count === 101)
+      assert(b.leftJoin(a){ (id, a, bOpt) => a + bOpt.get }.map(x=> x._2).reduce(_+_) === 0)
+      val c = VertexSetRDD(a, b.index)
+      assert(b.leftJoin(c){ (id, b, cOpt) => b + cOpt.get }.map(x=> x._2).reduce(_+_) === 0)
+      val d = c.filter(q => ((q._2 % 2) == 0))
+      val e = a.filter(q => ((q._2 % 2) == 0))
+      assert(d.count === e.count)
+      assert(b.zipJoin(c)((id, b, c) => b + c).map(x => x._2).reduce(_+_) === 0)
+
+    }
+  }
+
 }
