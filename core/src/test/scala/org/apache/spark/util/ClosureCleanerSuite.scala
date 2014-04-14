@@ -17,12 +17,10 @@
 
 package org.apache.spark.util
 
-import java.io.NotSerializableException
-
 import org.scalatest.FunSuite
 
-import org.apache.spark.SparkContext
 import org.apache.spark.LocalSparkContext._
+import org.apache.spark.SparkContext
 
 class ClosureCleanerSuite extends FunSuite {
   test("closures inside an object") {
@@ -61,8 +59,8 @@ class NonSerializable {}
 object TestObject {
   def run(): Int = {
     var nonSer = new NonSerializable
-    var x = 5
-    return withSpark(new SparkContext("local", "test")) { sc =>
+    val x = 5
+    withSpark(new SparkContext("local", "test")) { sc =>
       val nums = sc.parallelize(Array(1, 2, 3, 4))
       nums.map(_ + x).reduce(_ + _)
     }
@@ -76,7 +74,7 @@ class TestClass extends Serializable {
 
   def run(): Int = {
     var nonSer = new NonSerializable
-    return withSpark(new SparkContext("local", "test")) { sc =>
+    withSpark(new SparkContext("local", "test")) { sc =>
       val nums = sc.parallelize(Array(1, 2, 3, 4))
       nums.map(_ + getX).reduce(_ + _)
     }
@@ -88,7 +86,7 @@ class TestClassWithoutDefaultConstructor(x: Int) extends Serializable {
 
   def run(): Int = {
     var nonSer = new NonSerializable
-    return withSpark(new SparkContext("local", "test")) { sc =>
+    withSpark(new SparkContext("local", "test")) { sc =>
       val nums = sc.parallelize(Array(1, 2, 3, 4))
       nums.map(_ + getX).reduce(_ + _)
     }
@@ -103,7 +101,7 @@ class TestClassWithoutFieldAccess {
   def run(): Int = {
     var nonSer2 = new NonSerializable
     var x = 5
-    return withSpark(new SparkContext("local", "test")) { sc =>
+    withSpark(new SparkContext("local", "test")) { sc =>
       val nums = sc.parallelize(Array(1, 2, 3, 4))
       nums.map(_ + x).reduce(_ + _)
     }
@@ -115,7 +113,7 @@ object TestObjectWithNesting {
   def run(): Int = {
     var nonSer = new NonSerializable
     var answer = 0
-    return withSpark(new SparkContext("local", "test")) { sc =>
+    withSpark(new SparkContext("local", "test")) { sc =>
       val nums = sc.parallelize(Array(1, 2, 3, 4))
       var y = 1
       for (i <- 1 to 4) {
@@ -134,7 +132,7 @@ class TestClassWithNesting(val y: Int) extends Serializable {
   def run(): Int = {
     var nonSer = new NonSerializable
     var answer = 0
-    return withSpark(new SparkContext("local", "test")) { sc =>
+    withSpark(new SparkContext("local", "test")) { sc =>
       val nums = sc.parallelize(Array(1, 2, 3, 4))
       for (i <- 1 to 4) {
         var nonSer2 = new NonSerializable

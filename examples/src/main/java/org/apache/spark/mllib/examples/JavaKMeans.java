@@ -17,30 +17,33 @@
 
 package org.apache.spark.mllib.examples;
 
+import java.util.regex.Pattern;
+
 import org.apache.spark.api.java.JavaRDD;
 import org.apache.spark.api.java.JavaSparkContext;
 import org.apache.spark.api.java.function.Function;
 
 import org.apache.spark.mllib.clustering.KMeans;
 import org.apache.spark.mllib.clustering.KMeansModel;
-
-import java.util.Arrays;
-import java.util.StringTokenizer;
+import org.apache.spark.mllib.linalg.Vector;
+import org.apache.spark.mllib.linalg.Vectors;
 
 /**
  * Example using MLLib KMeans from Java.
  */
-public class JavaKMeans {
+public final class JavaKMeans {
 
-  static class ParsePoint extends Function<String, double[]> {
-    public double[] call(String line) {
-      StringTokenizer tok = new StringTokenizer(line, " ");
-      int numTokens = tok.countTokens();
-      double[] point = new double[numTokens];
-      for (int i = 0; i < numTokens; ++i) {
-        point[i] = Double.parseDouble(tok.nextToken());
+  private static class ParsePoint implements Function<String, Vector> {
+    private static final Pattern SPACE = Pattern.compile(" ");
+
+    @Override
+    public Vector call(String line) {
+      String[] tok = SPACE.split(line);
+      double[] point = new double[tok.length];
+      for (int i = 0; i < tok.length; ++i) {
+        point[i] = Double.parseDouble(tok[i]);
       }
-      return point;
+      return Vectors.dense(point);
     }
   }
 
@@ -62,16 +65,16 @@ public class JavaKMeans {
     }
 
     JavaSparkContext sc = new JavaSparkContext(args[0], "JavaKMeans",
-        System.getenv("SPARK_HOME"), System.getenv("SPARK_EXAMPLES_JAR"));
-    JavaRDD<String> lines = sc.textFile(args[1]);
+        System.getenv("SPARK_HOME"), JavaSparkContext.jarOfClass(JavaKMeans.class));
+    JavaRDD<String> lines = sc.textFile(inputFile);
 
-    JavaRDD<double[]> points = lines.map(new ParsePoint());
+    JavaRDD<Vector> points = lines.map(new ParsePoint());
 
-    KMeansModel model = KMeans.train(points.rdd(), k, iterations, runs);
+    KMeansModel model = KMeans.train(points.rdd(), k, iterations, runs, KMeans.K_MEANS_PARALLEL());
 
     System.out.println("Cluster centers:");
-    for (double[] center : model.clusterCenters()) {
-      System.out.println(" " + Arrays.toString(center));
+    for (Vector center : model.clusterCenters()) {
+      System.out.println(" " + center);
     }
     double cost = model.computeCost(points.rdd());
     System.out.println("Cost: " + cost);

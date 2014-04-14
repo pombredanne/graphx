@@ -32,21 +32,13 @@ import org.apache.spark.serializer.{SerializationStream, Serializer}
  *
  * This interface does not support concurrent writes.
  */
-abstract class BlockObjectWriter(val blockId: BlockId) {
-
-  var closeEventHandler: () => Unit = _
+private[spark] abstract class BlockObjectWriter(val blockId: BlockId) {
 
   def open(): BlockObjectWriter
 
-  def close() {
-    closeEventHandler()
-  }
+  def close()
 
   def isOpen: Boolean
-
-  def registerCloseEventHandler(handler: () => Unit) {
-    closeEventHandler = handler
-  }
 
   /**
    * Flush the partial writes and commit them as a single atomic block. Return the
@@ -74,15 +66,21 @@ abstract class BlockObjectWriter(val blockId: BlockId) {
    * Cumulative time spent performing blocking writes, in ns.
    */
   def timeWriting(): Long
+
+  /**
+   * Number of bytes written so far
+   */
+  def bytesWritten: Long
 }
 
 /** BlockObjectWriter which writes directly to a file on disk. Appends to the given file. */
-class DiskBlockObjectWriter(
+private[spark] class DiskBlockObjectWriter(
     blockId: BlockId,
     file: File,
     serializer: Serializer,
     bufferSize: Int,
-    compressStream: OutputStream => OutputStream)
+    compressStream: OutputStream => OutputStream,
+    syncWrites: Boolean)
   extends BlockObjectWriter(blockId)
   with Logging
 {
@@ -101,9 +99,9 @@ class DiskBlockObjectWriter(
     def write(i: Int): Unit = callWithTiming(out.write(i))
     override def write(b: Array[Byte]) = callWithTiming(out.write(b))
     override def write(b: Array[Byte], off: Int, len: Int) = callWithTiming(out.write(b, off, len))
+    override def close() = out.close()
+    override def flush() = out.flush()
   }
-
-  private val syncWrites = System.getProperty("spark.shuffle.sync", "false").toBoolean
 
   /** The file channel, used for repositioning / truncating the file. */
   private var channel: FileChannel = null
@@ -145,16 +143,16 @@ class DiskBlockObjectWriter(
       fos = null
       ts = null
       objOut = null
+      initialized = false
     }
-    // Invoke the close callback handler.
-    super.close()
   }
 
   override def isOpen: Boolean = objOut != null
 
   override def commit(): Long = {
     if (initialized) {
-      // NOTE: Flush the serializer first and then the compressed/buffered output stream
+      // NOTE: Because Kryo doesn't flush the underlying stream we explicitly flush both the
+      //       serializer stream and the lower level stream.
       objOut.flush()
       bs.flush()
       val prevPos = lastValidPosition
@@ -184,10 +182,14 @@ class DiskBlockObjectWriter(
   }
 
   override def fileSegment(): FileSegment = {
-    val bytesWritten = lastValidPosition - initialPosition
     new FileSegment(file, initialPosition, bytesWritten)
   }
 
   // Only valid if called after close()
   override def timeWriting() = _timeWriting
+
+  // Only valid if called after commit()
+  override def bytesWritten: Long = {
+    lastValidPosition - initialPosition
+  }
 }

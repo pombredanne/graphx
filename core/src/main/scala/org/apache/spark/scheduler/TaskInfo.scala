@@ -17,12 +17,13 @@
 
 package org.apache.spark.scheduler
 
-import org.apache.spark.util.Utils
+import org.apache.spark.annotation.DeveloperApi
 
 /**
+ * :: DeveloperApi ::
  * Information about a running task attempt inside a TaskSet.
  */
-private[spark]
+@DeveloperApi
 class TaskInfo(
     val taskId: Long,
     val index: Int,
@@ -46,15 +47,17 @@ class TaskInfo(
 
   var failed = false
 
-  def markGettingResult(time: Long = System.currentTimeMillis) {
+  var serializedSize: Int = 0
+
+  private[spark] def markGettingResult(time: Long = System.currentTimeMillis) {
     gettingResultTime = time
   }
 
-  def markSuccessful(time: Long = System.currentTimeMillis) {
+  private[spark] def markSuccessful(time: Long = System.currentTimeMillis) {
     finishTime = time
   }
 
-  def markFailed(time: Long = System.currentTimeMillis) {
+  private[spark] def markFailed(time: Long = System.currentTimeMillis) {
     finishTime = time
     failed = true
   }
@@ -68,25 +71,26 @@ class TaskInfo(
   def running: Boolean = !finished
 
   def status: String = {
-    if (running)
+    if (running) {
       "RUNNING"
-    else if (gettingResult)
+    } else if (gettingResult) {
       "GET RESULT"
-    else if (failed)
+    } else if (failed) {
       "FAILED"
-    else if (successful)
+    } else if (successful) {
       "SUCCESS"
-    else
+    } else {
       "UNKNOWN"
+    }
   }
 
   def duration: Long = {
     if (!finished) {
-      throw new UnsupportedOperationException("duration() called on unfinished tasks")
+      throw new UnsupportedOperationException("duration() called on unfinished task")
     } else {
       finishTime - launchTime
     }
   }
 
-  def timeRunning(currentTime: Long): Long = currentTime - launchTime
+  private[spark] def timeRunning(currentTime: Long): Long = currentTime - launchTime
 }

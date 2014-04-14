@@ -31,28 +31,30 @@ import java.io.{InputStream, OutputStream, DataInputStream, DataOutputStream}
 import com.esotericsoftware.kryo._
 
 class PageRankUtils extends Serializable {
-  def computeWithCombiner(numVertices: Long, epsilon: Double, terminateSteps: Int = 10)(
+  def computeWithCombiner(numVertices: Long, epsilon: Double)(
     self: PRVertex, messageSum: Option[Double], superstep: Int
   ): (PRVertex, Array[PRMessage]) = {
     val newValue = messageSum match {
       case Some(msgSum) if msgSum != 0 =>
-        0.15 + 0.85 * msgSum
+        0.15 / numVertices + 0.85 * msgSum
       case _ => self.value
     }
 
-    val terminate = superstep >= terminateSteps
+    val terminate = superstep >= 10
 
     val outbox: Array[PRMessage] =
-      if (!terminate)
-        self.outEdges.map(targetId =>
-          new PRMessage(targetId, newValue / self.outEdges.size))
-      else
+      if (!terminate) {
+        self.outEdges.map(targetId => new PRMessage(targetId, newValue / self.outEdges.size))
+      } else {
         Array[PRMessage]()
+      }
 
     (new PRVertex(newValue, self.outEdges, !terminate), outbox)
   }
 
-  def computeNoCombiner(numVertices: Long, epsilon: Double)(self: PRVertex, messages: Option[Array[PRMessage]], superstep: Int): (PRVertex, Array[PRMessage]) =
+  def computeNoCombiner(numVertices: Long, epsilon: Double)
+    (self: PRVertex, messages: Option[Array[PRMessage]], superstep: Int)
+  : (PRVertex, Array[PRMessage]) =
     computeWithCombiner(numVertices, epsilon)(self, messages match {
       case Some(msgs) => Some(msgs.map(_.value).sum)
       case None => None
@@ -81,7 +83,8 @@ class PRVertex() extends Vertex with Serializable {
   }
 
   override def toString(): String = {
-    "PRVertex(value=%f, outEdges.length=%d, active=%s)".format(value, outEdges.length, active.toString)
+    "PRVertex(value=%f, outEdges.length=%d, active=%s)"
+      .format(value, outEdges.length, active.toString)
   }
 }
 

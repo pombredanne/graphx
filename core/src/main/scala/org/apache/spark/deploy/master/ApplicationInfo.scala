@@ -17,10 +17,13 @@
 
 package org.apache.spark.deploy.master
 
-import org.apache.spark.deploy.ApplicationDescription
 import java.util.Date
-import akka.actor.ActorRef
+
 import scala.collection.mutable
+
+import akka.actor.ActorRef
+
+import org.apache.spark.deploy.ApplicationDescription
 
 private[spark] class ApplicationInfo(
     val startTime: Long,
@@ -28,7 +31,7 @@ private[spark] class ApplicationInfo(
     val desc: ApplicationDescription,
     val submitDate: Date,
     val driver: ActorRef,
-    val appUiUrl: String)
+    defaultCores: Int)
   extends Serializable {
 
   @transient var state: ApplicationState.Value = _
@@ -40,11 +43,6 @@ private[spark] class ApplicationInfo(
   @transient private var nextExecutorId: Int = _
 
   init()
-
-  private def readObject(in: java.io.ObjectInputStream) : Unit = {
-    in.defaultReadObject()
-    init()
-  }
 
   private def init() {
     state = ApplicationState.WAITING
@@ -81,7 +79,9 @@ private[spark] class ApplicationInfo(
     }
   }
 
-  def coresLeft: Int = desc.maxCores - coresGranted
+  private val myMaxCores = desc.maxCores.getOrElse(defaultCores)
+
+  def coresLeft: Int = myMaxCores - coresGranted
 
   private var _retryCount = 0
 

@@ -1,9 +1,13 @@
 *~
 *.swp
+*.ipr
 *.iml
+*.iws
 .idea/
+sbt/*.jar
 .settings
 .cache
+.mima-excludes
 /build/
 work/
 out/
@@ -41,3 +45,6 @@ derby.log
 dist/
 spark-*-bin.tar.gz
 unit-tests.log
+/lib/
+rat-results.txt
+scalastyle.txt

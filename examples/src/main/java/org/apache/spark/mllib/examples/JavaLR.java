@@ -17,6 +17,7 @@
 
 package org.apache.spark.mllib.examples;
 
+import java.util.regex.Pattern;
 
 import org.apache.spark.api.java.JavaRDD;
 import org.apache.spark.api.java.JavaSparkContext;
@@ -24,32 +25,29 @@ import org.apache.spark.api.java.function.Function;
 
 import org.apache.spark.mllib.classification.LogisticRegressionWithSGD;
 import org.apache.spark.mllib.classification.LogisticRegressionModel;
+import org.apache.spark.mllib.linalg.Vectors;
 import org.apache.spark.mllib.regression.LabeledPoint;
-
-import java.util.Arrays;
-import java.util.StringTokenizer;
 
 /**
  * Logistic regression based classification using ML Lib.
  */
-public class JavaLR {
+public final class JavaLR {
 
-  static class ParsePoint extends Function<String, LabeledPoint> {
+  static class ParsePoint implements Function<String, LabeledPoint> {
+    private static final Pattern COMMA = Pattern.compile(",");
+    private static final Pattern SPACE = Pattern.compile(" ");
+
+    @Override
     public LabeledPoint call(String line) {
-      String[] parts = line.split(",");
+      String[] parts = COMMA.split(line);
       double y = Double.parseDouble(parts[0]);
-      StringTokenizer tok = new StringTokenizer(parts[1], " ");
-      int numTokens = tok.countTokens();
-      double[] x = new double[numTokens];
-      for (int i = 0; i < numTokens; ++i) {
-        x[i] = Double.parseDouble(tok.nextToken());
+      String[] tok = SPACE.split(parts[1]);
+      double[] x = new double[tok.length];
+      for (int i = 0; i < tok.length; ++i) {
+        x[i] = Double.parseDouble(tok[i]);
       }
-      return new LabeledPoint(y, x);
+      return new LabeledPoint(y, Vectors.dense(x));
     }
-  }
-
-  public static void printWeights(double[] a) {
-    System.out.println(Arrays.toString(a));
   }
 
   public static void main(String[] args) {
@@ -59,7 +57,7 @@ public class JavaLR {
     }
 
     JavaSparkContext sc = new JavaSparkContext(args[0], "JavaLR",
-        System.getenv("SPARK_HOME"), System.getenv("SPARK_EXAMPLES_JAR"));
+        System.getenv("SPARK_HOME"), JavaSparkContext.jarOfClass(JavaLR.class));
     JavaRDD<String> lines = sc.textFile(args[1]);
     JavaRDD<LabeledPoint> points = lines.map(new ParsePoint()).cache();
     double stepSize = Double.parseDouble(args[2]);
@@ -77,8 +75,7 @@ public class JavaLR {
     LogisticRegressionModel model = LogisticRegressionWithSGD.train(points.rdd(),
         iterations, stepSize);
 
-    System.out.print("Final w: ");
-    printWeights(model.weights());
+    System.out.print("Final w: " + model.weights());
 
     System.exit(0);
   }

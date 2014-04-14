@@ -17,13 +17,15 @@
 
 package org.apache.spark.api.java
 
+import scala.reflect.ClassTag
+
 import org.apache.spark._
-import org.apache.spark.rdd.RDD
 import org.apache.spark.api.java.function.{Function => JFunction}
+import org.apache.spark.rdd.RDD
 import org.apache.spark.storage.StorageLevel
 
-class JavaRDD[T](val rdd: RDD[T])(implicit val classManifest: ClassManifest[T]) extends
-JavaRDDLike[T, JavaRDD[T]] {
+class JavaRDD[T](val rdd: RDD[T])(implicit val classTag: ClassTag[T])
+  extends JavaRDDLike[T, JavaRDD[T]] {
 
   override def wrapRDD(rdd: RDD[T]): JavaRDD[T] = JavaRDD.fromRDD(rdd)
 
@@ -68,7 +70,7 @@ JavaRDDLike[T, JavaRDD[T]] {
    * Return a new RDD containing only the elements that satisfy a predicate.
    */
   def filter(f: JFunction[T, java.lang.Boolean]): JavaRDD[T] =
-    wrapRDD(rdd.filter((x => f(x).booleanValue())))
+    wrapRDD(rdd.filter((x => f.call(x).booleanValue())))
 
   /**
    * Return a new RDD that is reduced into `numPartitions` partitions.
@@ -104,6 +106,15 @@ JavaRDDLike[T, JavaRDD[T]] {
    */
   def union(other: JavaRDD[T]): JavaRDD[T] = wrapRDD(rdd.union(other.rdd))
 
+
+  /**
+   * Return the intersection of this RDD and another one. The output will not contain any duplicate
+   * elements, even if the input RDDs did.
+   *
+   * Note that this method performs a shuffle internally.
+   */
+  def intersection(other: JavaRDD[T]): JavaRDD[T] = wrapRDD(rdd.intersection(other.rdd))
+
   /**
    * Return an RDD with the elements from `this` that are not in `other`.
    *
@@ -123,12 +134,19 @@ JavaRDDLike[T, JavaRDD[T]] {
    */
   def subtract(other: JavaRDD[T], p: Partitioner): JavaRDD[T] =
     wrapRDD(rdd.subtract(other, p))
+
+  override def toString = rdd.toString
+
+  /** Assign a name to this RDD */
+  def setName(name: String): JavaRDD[T] = {
+    rdd.setName(name)
+    this
+  }
 }
 
 object JavaRDD {
 
-  implicit def fromRDD[T: ClassManifest](rdd: RDD[T]): JavaRDD[T] = new JavaRDD[T](rdd)
+  implicit def fromRDD[T: ClassTag](rdd: RDD[T]): JavaRDD[T] = new JavaRDD[T](rdd)
 
   implicit def toRDD[T](rdd: JavaRDD[T]): RDD[T] = rdd.rdd
 }
-

@@ -25,7 +25,7 @@ import org.apache.hadoop.io.Writable
 import org.apache.hadoop.mapreduce._
 
 import org.apache.spark.{InterruptibleIterator, Logging, Partition, SerializableWritable, SparkContext, TaskContext}
-
+import org.apache.spark.annotation.DeveloperApi
 
 private[spark]
 class NewHadoopPartition(rddId: Int, val index: Int, @transient rawSplit: InputSplit with Writable)
@@ -33,9 +33,24 @@ class NewHadoopPartition(rddId: Int, val index: Int, @transient rawSplit: InputS
 
   val serializableHadoopSplit = new SerializableWritable(rawSplit)
 
-  override def hashCode(): Int = (41 * (41 + rddId) + index)
+  override def hashCode(): Int = 41 * (41 + rddId) + index
 }
 
+/**
+ * :: DeveloperApi ::
+ * An RDD that provides core functionality for reading data stored in Hadoop (e.g., files in HDFS,
+ * sources in HBase, or S3), using the new MapReduce API (`org.apache.hadoop.mapreduce`).
+ *
+ * Note: Instantiating this class directly is not recommended, please use
+ * [[org.apache.spark.SparkContext.newAPIHadoopRDD()]]
+ *
+ * @param sc The SparkContext to associate the RDD with.
+ * @param inputFormatClass Storage format of the data to be read.
+ * @param keyClass Class of the key associated with the inputFormatClass.
+ * @param valueClass Class of the value associated with the inputFormatClass.
+ * @param conf The Hadoop configuration.
+ */
+@DeveloperApi
 class NewHadoopRDD[K, V](
     sc : SparkContext,
     inputFormatClass: Class[_ <: InputFormat[K, V]],
@@ -71,12 +86,12 @@ class NewHadoopRDD[K, V](
     result
   }
 
-  override def compute(theSplit: Partition, context: TaskContext) = {
+  override def compute(theSplit: Partition, context: TaskContext): InterruptibleIterator[(K, V)] = {
     val iter = new Iterator[(K, V)] {
       val split = theSplit.asInstanceOf[NewHadoopPartition]
       logInfo("Input split: " + split.serializableHadoopSplit)
       val conf = confBroadcast.value.value
-      val attemptId = newTaskAttemptID(jobtrackerId, id, true, split.index, 0)
+      val attemptId = newTaskAttemptID(jobtrackerId, id, isMap = true, split.index, 0)
       val hadoopAttemptContext = newTaskAttemptContext(conf, attemptId)
       val format = inputFormatClass.newInstance
       if (format.isInstanceOf[Configurable]) {
@@ -88,7 +103,6 @@ class NewHadoopRDD[K, V](
 
       // Register an on-task-completion callback to close the input stream.
       context.addOnCompleteCallback(() => close())
-
       var havePair = false
       var finished = false
 

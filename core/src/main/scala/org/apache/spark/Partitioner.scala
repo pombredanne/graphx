@@ -17,8 +17,11 @@
 
 package org.apache.spark
 
-import org.apache.spark.util.Utils
+import scala.reflect.ClassTag
+
 import org.apache.spark.rdd.RDD
+import org.apache.spark.util.CollectionsUtils
+import org.apache.spark.util.Utils
 
 /**
  * An object that defines how the elements in a key-value pair RDD are partitioned by key.
@@ -39,7 +42,7 @@ object Partitioner {
    * spark.default.parallelism is set, then we'll use the value from SparkContext
    * defaultParallelism, otherwise we'll use the max number of upstream partitions.
    *
-   * Unless spark.default.parallelism is set, He number of partitions will be the
+   * Unless spark.default.parallelism is set, the number of partitions will be the
    * same as the number of partitions in the largest upstream RDD, as this should
    * be least likely to cause out-of-memory errors.
    *
@@ -47,19 +50,20 @@ object Partitioner {
    */
   def defaultPartitioner(rdd: RDD[_], others: RDD[_]*): Partitioner = {
     val bySize = (Seq(rdd) ++ others).sortBy(_.partitions.size).reverse
-    for (r <- bySize if r.partitioner != None) {
+    for (r <- bySize if r.partitioner.isDefined) {
       return r.partitioner.get
     }
-    if (System.getProperty("spark.default.parallelism") != null) {
-      return new HashPartitioner(rdd.context.defaultParallelism)
+    if (rdd.context.conf.contains("spark.default.parallelism")) {
+      new HashPartitioner(rdd.context.defaultParallelism)
     } else {
-      return new HashPartitioner(bySize.head.partitions.size)
+      new HashPartitioner(bySize.head.partitions.size)
     }
   }
 }
 
 /**
- * A [[org.apache.spark.Partitioner]] that implements hash-based partitioning using Java's `Object.hashCode`.
+ * A [[org.apache.spark.Partitioner]] that implements hash-based partitioning using
+ * Java's `Object.hashCode`.
  *
  * Java arrays have hashCodes that are based on the arrays' identities rather than their contents,
  * so attempting to partition an RDD[Array[_]] or RDD[(Array[_], _)] using a HashPartitioner will
@@ -72,7 +76,7 @@ class HashPartitioner(partitions: Int) extends Partitioner {
     case null => 0
     case _ => Utils.nonNegativeMod(key.hashCode, numPartitions)
   }
-  
+
   override def equals(other: Any): Boolean = other match {
     case h: HashPartitioner =>
       h.numPartitions == numPartitions
@@ -82,13 +86,13 @@ class HashPartitioner(partitions: Int) extends Partitioner {
 }
 
 /**
- * A [[org.apache.spark.Partitioner]] that partitions sortable records by range into roughly equal ranges.
- * Determines the ranges by sampling the RDD passed in.
+ * A [[org.apache.spark.Partitioner]] that partitions sortable records by range into roughly
+ * equal ranges. The ranges are determined by sampling the content of the RDD passed in.
  */
-class RangePartitioner[K <% Ordered[K]: ClassManifest, V](
+class RangePartitioner[K <% Ordered[K]: ClassTag, V](
     partitions: Int,
     @transient rdd: RDD[_ <: Product2[K,V]],
-    private val ascending: Boolean = true) 
+    private val ascending: Boolean = true)
   extends Partitioner {
 
   // An array of upper bounds for the first (partitions - 1) partitions
@@ -115,12 +119,26 @@ class RangePartitioner[K <% Ordered[K]: ClassManifest, V](
 
   def numPartitions = partitions
 
+  private val binarySearch: ((Array[K], K) => Int) = CollectionsUtils.makeBinarySearch[K]
+
   def getPartition(key: Any): Int = {
-    // TODO: Use a binary search here if number of partitions is large
     val k = key.asInstanceOf[K]
     var partition = 0
-    while (partition < rangeBounds.length && k > rangeBounds(partition)) {
-      partition += 1
+    if (rangeBounds.length < 1000) {
+      // If we have less than 100 partitions naive search
+      while (partition < rangeBounds.length && k > rangeBounds(partition)) {
+        partition += 1
+      }
+    } else {
+      // Determine which binary search method to use only once.
+      partition = binarySearch(rangeBounds, k)
+      // binarySearch either returns the match location or -[insertion point]-1
+      if (partition < 0) {
+        partition = -partition-1
+      }
+      if (partition > rangeBounds.length) {
+        partition = rangeBounds.length
+      }
     }
     if (ascending) {
       partition

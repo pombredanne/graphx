@@ -17,16 +17,41 @@
 
 package org.apache.spark.deploy
 
+import java.security.PrivilegedExceptionAction
+
 import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.mapred.JobConf
+import org.apache.hadoop.security.Credentials
+import org.apache.hadoop.security.UserGroupInformation
 
-import org.apache.spark.SparkException
+import org.apache.spark.{SparkContext, SparkException}
+
+import scala.collection.JavaConversions._
 
 /**
  * Contains util methods to interact with Hadoop from Spark.
  */
-private[spark]
 class SparkHadoopUtil {
+  val conf: Configuration = newConfiguration()
+  UserGroupInformation.setConfiguration(conf)
+
+  def runAsUser(user: String)(func: () => Unit) {
+    if (user != SparkContext.SPARK_UNKNOWN_USER) {
+      val ugi = UserGroupInformation.createRemoteUser(user)
+      transferCredentials(UserGroupInformation.getCurrentUser(), ugi)
+      ugi.doAs(new PrivilegedExceptionAction[Unit] {
+        def run: Unit = func()
+      })
+    } else {
+      func()
+    }
+  }
+
+  def transferCredentials(source: UserGroupInformation, dest: UserGroupInformation) {
+    for (token <- source.getTokens()) {
+      dest.addToken(token)
+    }
+  }
 
   /**
    * Return an appropriate (subclass) of Configuration. Creating config can initializes some Hadoop
@@ -41,14 +66,27 @@ class SparkHadoopUtil {
   def addCredentials(conf: JobConf) {}
 
   def isYarnMode(): Boolean = { false }
+
+  def getCurrentUserCredentials(): Credentials = { null }
+
+  def addCurrentUserCredentials(creds: Credentials) {}
+
+  def addSecretKeyToUserCredentials(key: String, secret: String) {}
+
+  def getSecretKeyFromUserCredentials(key: String): Array[Byte] = { null }
+
 }
-  
+
 object SparkHadoopUtil {
-  private val hadoop = { 
-    val yarnMode = java.lang.Boolean.valueOf(System.getProperty("SPARK_YARN_MODE", System.getenv("SPARK_YARN_MODE")))
+
+  private val hadoop = {
+    val yarnMode = java.lang.Boolean.valueOf(
+        System.getProperty("SPARK_YARN_MODE", System.getenv("SPARK_YARN_MODE")))
     if (yarnMode) {
       try {
-        Class.forName("org.apache.spark.deploy.yarn.YarnSparkHadoopUtil").newInstance.asInstanceOf[SparkHadoopUtil]
+        Class.forName("org.apache.spark.deploy.yarn.YarnSparkHadoopUtil")
+          .newInstance()
+          .asInstanceOf[SparkHadoopUtil]
       } catch {
        case th: Throwable => throw new SparkException("Unable to load YARN support", th)
       }
@@ -56,7 +94,7 @@ object SparkHadoopUtil {
       new SparkHadoopUtil
     }
   }
-  
+
   def get: SparkHadoopUtil = {
     hadoop
   }

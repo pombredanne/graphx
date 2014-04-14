@@ -31,26 +31,32 @@ import org.apache.spark.rdd.RDD
 object WikipediaPageRankStandalone {
   def main(args: Array[String]) {
     if (args.length < 5) {
-      System.err.println("Usage: WikipediaPageRankStandalone <inputFile> <threshold> <numIterations> <host> <usePartitioner>")
+      System.err.println("Usage: WikipediaPageRankStandalone <inputFile> <threshold> " +
+        "<numIterations> <host> <usePartitioner>")
       System.exit(-1)
     }
+    val sparkConf = new SparkConf()
+    sparkConf.set("spark.serializer", "spark.bagel.examples.WPRSerializer")
 
-    System.setProperty("spark.serializer", "spark.bagel.examples.WPRSerializer")
 
     val inputFile = args(0)
     val threshold = args(1).toDouble
     val numIterations = args(2).toInt
     val host = args(3)
     val usePartitioner = args(4).toBoolean
-    val sc = new SparkContext(host, "WikipediaPageRankStandalone")
+
+    sparkConf.setMaster(host).setAppName("WikipediaPageRankStandalone")
+
+    val sc = new SparkContext(sparkConf)
 
     val input = sc.textFile(inputFile)
     val partitioner = new HashPartitioner(sc.defaultParallelism)
     val links =
-      if (usePartitioner)
+      if (usePartitioner) {
         input.map(parseArticle _).partitionBy(partitioner).cache()
-      else
+      } else {
         input.map(parseArticle _).cache()
+      }
     val n = links.count()
     val defaultRank = 1.0 / n
     val a = 0.15
@@ -58,10 +64,11 @@ object WikipediaPageRankStandalone {
     // Do the computation
     val startTime = System.currentTimeMillis
     val ranks =
-        pageRank(links, numIterations, defaultRank, a, n, partitioner, usePartitioner, sc.defaultParallelism)
+      pageRank(links, numIterations, defaultRank, a, n, partitioner, usePartitioner,
+        sc.defaultParallelism)
 
     // Print the result
-    System.err.println("Articles with PageRank >= "+threshold+":")
+    System.err.println("Articles with PageRank >= " + threshold + ":")
     val top =
       (ranks
        .filter { case (id, rank) => rank >= threshold }
@@ -71,7 +78,7 @@ object WikipediaPageRankStandalone {
 
     val time = (System.currentTimeMillis - startTime) / 1000.0
     println("Completed %d iterations in %f seconds: %f seconds per iteration"
-            .format(numIterations, time, time / numIterations))
+      .format(numIterations, time, time / numIterations))
     System.exit(0)
   }
 
@@ -80,16 +87,17 @@ object WikipediaPageRankStandalone {
     val (title, body) = (fields(1), fields(3).replace("\\n", "\n"))
     val id = new String(title)
     val links =
-      if (body == "\\N")
+      if (body == "\\N") {
         NodeSeq.Empty
-      else
+      } else {
         try {
           XML.loadString(body) \\ "link" \ "target"
         } catch {
           case e: org.xml.sax.SAXParseException =>
-            System.err.println("Article \""+title+"\" has malformed XML in body:\n"+body)
+            System.err.println("Article \"" + title + "\" has malformed XML in body:\n" + body)
           NodeSeq.Empty
         }
+      }
     val outEdges = links.map(link => new String(link.text)).toArray
     (id, outEdges)
   }
@@ -107,12 +115,16 @@ object WikipediaPageRankStandalone {
     var ranks = links.mapValues { edges => defaultRank }
     for (i <- 1 to numIterations) {
       val contribs = links.groupWith(ranks).flatMap {
-        case (id, (linksWrapper, rankWrapper)) =>
-          if (linksWrapper.length > 0) {
-            if (rankWrapper.length > 0) {
-              linksWrapper(0).map(dest => (dest, rankWrapper(0) / linksWrapper(0).size))
+        case (id, (linksWrapperIterable, rankWrapperIterable)) =>
+          val linksWrapper = linksWrapperIterable.iterator
+          val rankWrapper = rankWrapperIterable.iterator
+          if (linksWrapper.hasNext) {
+            val linksWrapperHead = linksWrapper.next
+            if (rankWrapper.hasNext) {
+              val rankWrapperHead = rankWrapper.next
+              linksWrapperHead.map(dest => (dest, rankWrapperHead / linksWrapperHead.size))
             } else {
-              linksWrapper(0).map(dest => (dest, defaultRank / linksWrapper(0).size))
+              linksWrapperHead.map(dest => (dest, defaultRank / linksWrapperHead.size))
             }
           } else {
             Array[(String, Double)]()

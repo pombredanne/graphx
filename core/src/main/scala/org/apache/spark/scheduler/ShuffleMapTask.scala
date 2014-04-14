@@ -24,20 +24,16 @@ import scala.collection.mutable.HashMap
 
 import org.apache.spark._
 import org.apache.spark.executor.ShuffleWriteMetrics
+import org.apache.spark.rdd.{RDD, RDDCheckpointData}
+import org.apache.spark.serializer.Serializer
 import org.apache.spark.storage._
-import org.apache.spark.util.{MetadataCleanerType, TimeStampedHashMap, MetadataCleaner}
-import org.apache.spark.rdd.RDD
-import org.apache.spark.rdd.RDDCheckpointData
-
 
 private[spark] object ShuffleMapTask {
 
   // A simple map between the stage id to the serialized byte array of a task.
   // Served as a cache for task serialization because serialization can be
   // expensive on the master node if it needs to launch thousands of tasks.
-  val serializedInfoCache = new TimeStampedHashMap[Int, Array[Byte]]
-
-  val metadataCleaner = new MetadataCleaner(MetadataCleanerType.SHUFFLE_MAP_TASK, serializedInfoCache.clearOldValues)
+  private val serializedInfoCache = new HashMap[Int, Array[Byte]]
 
   def serializeInfo(stageId: Int, rdd: RDD[_], dep: ShuffleDependency[_,_]): Array[Byte] = {
     synchronized {
@@ -76,6 +72,10 @@ private[spark] object ShuffleMapTask {
     val objIn = new ObjectInputStream(in)
     val set = objIn.readObject().asInstanceOf[Array[(String, Long)]].toMap
     HashMap(set.toSeq: _*)
+  }
+
+  def removeStage(stageId: Int) {
+    serializedInfoCache.remove(stageId)
   }
 
   def clearCache() {
@@ -152,7 +152,7 @@ private[spark] class ShuffleMapTask(
 
     try {
       // Obtain all the block writers for shuffle blocks.
-      val ser = SparkEnv.get.serializerManager.get(dep.serializerClass)
+      val ser = Serializer.getSerializer(dep.serializer)
       shuffle = shuffleBlockManager.forMapTask(dep.shuffleId, partitionId, numOutputSplits, ser)
 
       // Write the map output to its associated buckets.
@@ -167,6 +167,7 @@ private[spark] class ShuffleMapTask(
       var totalTime = 0L
       val compressedSizes: Array[Byte] = shuffle.writers.map { writer: BlockObjectWriter =>
         writer.commit()
+        writer.close()
         val size = writer.fileSegment().length
         totalBytes += size
         totalTime += writer.timeWriting()
@@ -184,14 +185,16 @@ private[spark] class ShuffleMapTask(
     } catch { case e: Exception =>
       // If there is an exception from running the task, revert the partial writes
       // and throw the exception upstream to Spark.
-      if (shuffle != null) {
-        shuffle.writers.foreach(_.revertPartialWrites())
+      if (shuffle != null && shuffle.writers != null) {
+        for (writer <- shuffle.writers) {
+          writer.revertPartialWrites()
+          writer.close()
+        }
       }
       throw e
     } finally {
       // Release the writers back to the shuffle block manager.
       if (shuffle != null && shuffle.writers != null) {
-        shuffle.writers.foreach(_.close())
         shuffle.releaseWriters(success)
       }
       // Execute the callbacks on task completion.

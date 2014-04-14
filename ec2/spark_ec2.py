@@ -70,14 +70,14 @@ def parse_args():
            "slaves across multiple (an additional $0.01/Gb for bandwidth" +
            "between zones applies)")
   parser.add_option("-a", "--ami", help="Amazon Machine Image ID to use")
-  parser.add_option("-v", "--spark-version", default="0.8.0",
+  parser.add_option("-v", "--spark-version", default="0.9.0",
       help="Version of Spark to use: 'X.Y.Z' or a specific git hash")
-  parser.add_option("--spark-git-repo", 
-      default="https://github.com/apache/incubator-spark",
+  parser.add_option("--spark-git-repo",
+      default="https://github.com/apache/spark",
       help="Github repo from which to checkout supplied commit hash")
   parser.add_option("--hadoop-major-version", default="1",
       help="Major version of Hadoop (default: 1)")
-  parser.add_option("-D", metavar="[ADDRESS:]PORT", dest="proxy_port", 
+  parser.add_option("-D", metavar="[ADDRESS:]PORT", dest="proxy_port",
       help="Use SSH dynamic port forwarding to create a SOCKS proxy at " +
             "the given local address (for use with login)")
   parser.add_option("--resume", action="store_true", default=False,
@@ -101,6 +101,8 @@ def parse_args():
       help="The SSH user you want to connect as (default: root)")
   parser.add_option("--delete-groups", action="store_true", default=False,
       help="When destroying a cluster, delete the security groups that were created")
+  parser.add_option("--use-existing-master", action="store_true", default=False,
+      help="Launch fresh slaves, but use an existing stopped master if possible")
 
   (opts, args) = parser.parse_args()
   if len(args) != 2:
@@ -155,7 +157,7 @@ def is_active(instance):
 
 # Return correct versions of Spark and Shark, given the supplied Spark version
 def get_spark_shark_version(opts):
-  spark_shark_map = {"0.7.3": "0.7.1", "0.8.0": "0.8.0"}
+  spark_shark_map = {"0.7.3": "0.7.1", "0.8.0": "0.8.0", "0.8.1": "0.8.1", "0.9.0": "0.9.0"}
   version = opts.spark_version.replace("v", "")
   if version not in spark_shark_map:
     print >> stderr, "Don't know about Spark version: %s" % version
@@ -183,7 +185,16 @@ def get_spark_ami(opts):
     "hi1.4xlarge": "hvm",
     "m3.xlarge":   "hvm",
     "m3.2xlarge":  "hvm",
-    "cr1.8xlarge": "hvm"
+    "cr1.8xlarge": "hvm",
+    "i2.xlarge":   "hvm",
+    "i2.2xlarge":  "hvm",
+    "i2.4xlarge":  "hvm",
+    "i2.8xlarge":  "hvm",
+    "c3.large":    "pvm",
+    "c3.xlarge":   "pvm",
+    "c3.2xlarge":  "pvm",
+    "c3.4xlarge":  "pvm",
+    "c3.8xlarge":  "pvm"
   }
   if opts.instance_type in instance_types:
     instance_type = instance_types[opts.instance_type]
@@ -191,7 +202,7 @@ def get_spark_ami(opts):
     instance_type = "pvm"
     print >> stderr,\
         "Don't recognize %s, assuming type is pvm" % opts.instance_type
-  
+
   ami_path = "%s/%s/%s" % (AMI_PREFIX, opts.region, instance_type)
   try:
     ami = urllib2.urlopen(ami_path).read().strip()
@@ -207,6 +218,12 @@ def get_spark_ami(opts):
 # Returns a tuple of EC2 reservation objects for the master and slaves
 # Fails if there already instances running in the cluster's groups.
 def launch_cluster(conn, opts, cluster_name):
+  if opts.identity_file is None:
+    print >> stderr, "ERROR: Must provide an identity file (-i) for ssh connections."
+    sys.exit(1)
+  if opts.key_pair is None:
+    print >> stderr, "ERROR: Must provide a key pair name (-k) to use on instances."
+    sys.exit(1)    
   print "Setting up security groups..."
   master_group = get_or_make_group(conn, cluster_name + "-master")
   slave_group = get_or_make_group(conn, cluster_name + "-slaves")
@@ -215,6 +232,7 @@ def launch_cluster(conn, opts, cluster_name):
     master_group.authorize(src_group=slave_group)
     master_group.authorize('tcp', 22, 22, '0.0.0.0/0')
     master_group.authorize('tcp', 8080, 8081, '0.0.0.0/0')
+    master_group.authorize('tcp', 19999, 19999, '0.0.0.0/0')
     master_group.authorize('tcp', 50030, 50030, '0.0.0.0/0')
     master_group.authorize('tcp', 50070, 50070, '0.0.0.0/0')
     master_group.authorize('tcp', 60070, 60070, '0.0.0.0/0')
@@ -232,9 +250,9 @@ def launch_cluster(conn, opts, cluster_name):
     slave_group.authorize('tcp', 60075, 60075, '0.0.0.0/0')
 
   # Check if instances are already running in our groups
-  active_nodes = get_existing_cluster(conn, opts, cluster_name,
-                                      die_on_error=False)
-  if any(active_nodes):
+  existing_masters, existing_slaves = get_existing_cluster(conn, opts, cluster_name,
+                                                           die_on_error=False)
+  if existing_slaves or (existing_masters and not opts.use_existing_master):
     print >> stderr, ("ERROR: There are already instances running in " +
         "group %s or %s" % (master_group.name, slave_group.name))
     sys.exit(1)
@@ -335,21 +353,28 @@ def launch_cluster(conn, opts, cluster_name):
                                                         zone, slave_res.id)
       i += 1
 
-  # Launch masters
-  master_type = opts.master_instance_type
-  if master_type == "":
-    master_type = opts.instance_type
-  if opts.zone == 'all':
-    opts.zone = random.choice(conn.get_all_zones()).name
-  master_res = image.run(key_name = opts.key_pair,
-                         security_groups = [master_group],
-                         instance_type = master_type,
-                         placement = opts.zone,
-                         min_count = 1,
-                         max_count = 1,
-                         block_device_map = block_map)
-  master_nodes = master_res.instances
-  print "Launched master in %s, regid = %s" % (zone, master_res.id)
+  # Launch or resume masters
+  if existing_masters:
+    print "Starting master..."
+    for inst in existing_masters:
+      if inst.state not in ["shutting-down", "terminated"]:
+        inst.start()
+    master_nodes = existing_masters
+  else:
+    master_type = opts.master_instance_type
+    if master_type == "":
+      master_type = opts.instance_type
+    if opts.zone == 'all':
+      opts.zone = random.choice(conn.get_all_zones()).name
+    master_res = image.run(key_name = opts.key_pair,
+                           security_groups = [master_group],
+                           instance_type = master_type,
+                           placement = opts.zone,
+                           min_count = 1,
+                           max_count = 1,
+                           block_device_map = block_map)
+    master_nodes = master_res.instances
+    print "Launched master in %s, regid = %s" % (zone, master_res.id)
 
   # Return all the instances
   return (master_nodes, slave_nodes)
@@ -373,15 +398,13 @@ def get_existing_cluster(conn, opts, cluster_name, die_on_error=True):
   if any((master_nodes, slave_nodes)):
     print ("Found %d master(s), %d slaves" %
            (len(master_nodes), len(slave_nodes)))
-  if (master_nodes != [] and slave_nodes != []) or not die_on_error:
+  if master_nodes != [] or not die_on_error:
     return (master_nodes, slave_nodes)
   else:
     if master_nodes == [] and slave_nodes != []:
-      print "ERROR: Could not find master in group " + cluster_name + "-master"
-    elif master_nodes != [] and slave_nodes == []:
-      print "ERROR: Could not find slaves in group " + cluster_name + "-slaves"
+      print >> sys.stderr, "ERROR: Could not find master in group " + cluster_name + "-master"
     else:
-      print "ERROR: Could not find any existing cluster"
+      print >> sys.stderr, "ERROR: Could not find any existing cluster"
     sys.exit(1)
 
 
@@ -403,8 +426,8 @@ def setup_cluster(conn, master_nodes, slave_nodes, opts, deploy_ssh_key):
       print slave.public_dns_name
       ssh_write(slave.public_dns_name, opts, ['tar', 'x'], dot_ssh_tar)
 
-  modules = ['spark', 'shark', 'ephemeral-hdfs', 'persistent-hdfs', 
-             'mapreduce', 'spark-standalone']
+  modules = ['spark', 'shark', 'ephemeral-hdfs', 'persistent-hdfs',
+             'mapreduce', 'spark-standalone', 'tachyon']
 
   if opts.hadoop_major_version == "1":
     modules = filter(lambda x: x != "mapreduce", modules)
@@ -426,7 +449,7 @@ def setup_cluster(conn, master_nodes, slave_nodes, opts, deploy_ssh_key):
 def setup_standalone_cluster(master, slave_nodes, opts):
   slave_ips = '\n'.join([i.public_dns_name for i in slave_nodes])
   ssh(master, opts, "echo \"%s\" > spark/conf/slaves" % (slave_ips))
-  ssh(master, opts, "/root/spark/bin/start-all.sh")
+  ssh(master, opts, "/root/spark/sbin/start-all.sh")
 
 def setup_spark_cluster(master, opts):
   ssh(master, opts, "chmod u+x spark-ec2/setup.sh")
@@ -468,7 +491,16 @@ def get_num_disks(instance_type):
     "cr1.8xlarge": 2,
     "hi1.4xlarge": 2,
     "m3.xlarge":   0,
-    "m3.2xlarge":  0
+    "m3.2xlarge":  0,
+    "i2.xlarge":   1,
+    "i2.2xlarge":  2,
+    "i2.4xlarge":  4,
+    "i2.8xlarge":  8,
+    "c3.large":    2,
+    "c3.xlarge":   2,
+    "c3.2xlarge":  2,
+    "c3.4xlarge":  2,
+    "c3.8xlarge":  2
   }
   if instance_type in disks_by_instance:
     return disks_by_instance[instance_type]
@@ -579,7 +611,7 @@ def ssh(host, opts, command):
   while True:
     try:
       return subprocess.check_call(
-        ssh_command(opts) + ['-t', '%s@%s' % (opts.user, host), stringify_command(command)])
+        ssh_command(opts) + ['-t', '-t', '%s@%s' % (opts.user, host), stringify_command(command)])
     except subprocess.CalledProcessError as e:
       if (tries > 2):
         # If this was an ssh failure, provide the user with hints.
@@ -646,6 +678,9 @@ def real_main():
     opts.zone = random.choice(conn.get_all_zones()).name
 
   if action == "launch":
+    if opts.slaves <= 0:
+      print >> sys.stderr, "ERROR: You have to start at least 1 slave"
+      sys.exit(1)
     if opts.resume:
       (master_nodes, slave_nodes) = get_existing_cluster(
           conn, opts, cluster_name)
@@ -668,12 +703,12 @@ def real_main():
       print "Terminating slaves..."
       for inst in slave_nodes:
         inst.terminate()
-      
+
       # Delete security groups as well
       if opts.delete_groups:
         print "Deleting security groups (this will take some time)..."
         group_names = [cluster_name + "-master", cluster_name + "-slaves"]
-        
+
         attempt = 1;
         while attempt <= 3:
           print "Attempt %d" % attempt
@@ -720,7 +755,7 @@ def real_main():
     if opts.proxy_port != None:
       proxy_opt = ['-D', opts.proxy_port]
     subprocess.check_call(
-        ssh_command(opts) + proxy_opt + ['-t', "%s@%s" % (opts.user, master)])
+        ssh_command(opts) + proxy_opt + ['-t', '-t', "%s@%s" % (opts.user, master)])
 
   elif action == "get-master":
     (master_nodes, slave_nodes) = get_existing_cluster(conn, opts, cluster_name)
@@ -731,6 +766,7 @@ def real_main():
         cluster_name + "?\nDATA ON EPHEMERAL DISKS WILL BE LOST, " +
         "BUT THE CLUSTER WILL KEEP USING SPACE ON\n" +
         "AMAZON EBS IF IT IS EBS-BACKED!!\n" +
+        "All data on spot-instance slaves will be lost.\n" +
         "Stop cluster " + cluster_name + " (y/N): ")
     if response == "y":
       (master_nodes, slave_nodes) = get_existing_cluster(
@@ -742,7 +778,10 @@ def real_main():
       print "Stopping slaves..."
       for inst in slave_nodes:
         if inst.state not in ["shutting-down", "terminated"]:
-          inst.stop()
+          if inst.spot_instance_request_id:
+            inst.terminate()
+          else:
+            inst.stop()
 
   elif action == "start":
     (master_nodes, slave_nodes) = get_existing_cluster(conn, opts, cluster_name)

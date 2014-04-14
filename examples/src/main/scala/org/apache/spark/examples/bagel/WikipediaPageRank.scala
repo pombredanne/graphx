@@ -33,19 +33,22 @@ import scala.xml.{XML,NodeSeq}
 object WikipediaPageRank {
   def main(args: Array[String]) {
     if (args.length < 5) {
-      System.err.println("Usage: WikipediaPageRank <inputFile> <threshold> <numPartitions> <host> <usePartitioner>")
+      System.err.println(
+        "Usage: WikipediaPageRank <inputFile> <threshold> <numPartitions> <host> <usePartitioner>")
       System.exit(-1)
     }
-
-    System.setProperty("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
-    System.setProperty("spark.kryo.registrator", classOf[PRKryoRegistrator].getName)
+    val sparkConf = new SparkConf()
+    sparkConf.set("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
+    sparkConf.set("spark.kryo.registrator",  classOf[PRKryoRegistrator].getName)
 
     val inputFile = args(0)
     val threshold = args(1).toDouble
     val numPartitions = args(2).toInt
     val host = args(3)
     val usePartitioner = args(4).toBoolean
-    val sc = new SparkContext(host, "WikipediaPageRank")
+
+    sparkConf.setMaster(host).setAppName("WikipediaPageRank")
+    val sc = new SparkContext(sparkConf)
 
     // Parse the Wikipedia page data into a graph
     val input = sc.textFile(inputFile)
@@ -59,24 +62,26 @@ object WikipediaPageRank {
       val fields = line.split("\t")
       val (title, body) = (fields(1), fields(3).replace("\\n", "\n"))
       val links =
-        if (body == "\\N")
+        if (body == "\\N") {
           NodeSeq.Empty
-        else
+        } else {
           try {
             XML.loadString(body) \\ "link" \ "target"
           } catch {
             case e: org.xml.sax.SAXParseException =>
-              System.err.println("Article \""+title+"\" has malformed XML in body:\n"+body)
+              System.err.println("Article \"" + title + "\" has malformed XML in body:\n" + body)
             NodeSeq.Empty
           }
+        }
       val outEdges = links.map(link => new String(link.text)).toArray
       val id = new String(title)
       (id, new PRVertex(1.0 / numVertices, outEdges))
     })
-    if (usePartitioner)
+    if (usePartitioner) {
       vertices = vertices.partitionBy(new HashPartitioner(sc.defaultParallelism)).cache
-    else
+    } else {
       vertices = vertices.cache
+    }
     println("Done parsing input file.")
 
     // Do the computation
@@ -90,7 +95,7 @@ object WikipediaPageRank {
           utils.computeWithCombiner(numVertices, epsilon))
 
     // Print the result
-    System.err.println("Articles with PageRank >= "+threshold+":")
+    System.err.println("Articles with PageRank >= " + threshold + ":")
     val top =
       (result
        .filter { case (id, vertex) => vertex.value >= threshold }

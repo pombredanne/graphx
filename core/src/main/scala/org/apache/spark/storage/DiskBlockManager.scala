@@ -19,7 +19,7 @@ package org.apache.spark.storage
 
 import java.io.File
 import java.text.SimpleDateFormat
-import java.util.{Date, Random}
+import java.util.{Date, Random, UUID}
 
 import org.apache.spark.Logging
 import org.apache.spark.executor.ExecutorExitCode
@@ -38,7 +38,7 @@ private[spark] class DiskBlockManager(shuffleManager: ShuffleBlockManager, rootD
   extends PathResolver with Logging {
 
   private val MAX_DIR_CREATION_ATTEMPTS: Int = 10
-  private val subDirsPerLocalDir = System.getProperty("spark.diskStore.subDirectories", "64").toInt
+  private val subDirsPerLocalDir = shuffleManager.conf.getInt("spark.diskStore.subDirectories", 64)
 
   // Create one local directory for each path mentioned in spark.local.dir; then, inside this
   // directory, create multiple subdirectories that we will hash files into, in order to avoid
@@ -50,7 +50,7 @@ private[spark] class DiskBlockManager(shuffleManager: ShuffleBlockManager, rootD
   addShutdownHook()
 
   /**
-   * Returns the phyiscal file segment in which the given BlockId is located.
+   * Returns the physical file segment in which the given BlockId is located.
    * If the BlockId has been mapped to a specific FileSegment, that will be returned.
    * Otherwise, we assume the Block is mapped to a whole file identified by the BlockId directly.
    */
@@ -89,6 +89,29 @@ private[spark] class DiskBlockManager(shuffleManager: ShuffleBlockManager, rootD
   }
 
   def getFile(blockId: BlockId): File = getFile(blockId.name)
+
+  /** Check if disk block manager has a block. */
+  def containsBlock(blockId: BlockId): Boolean = {
+    getBlockLocation(blockId).file.exists()
+  }
+
+  /** List all the blocks currently stored on disk by the disk manager. */
+  def getAllBlocks(): Seq[BlockId] = {
+    // Get all the files inside the array of array of directories
+    subDirs.flatten.filter(_ != null).flatMap { dir =>
+      val files = dir.list()
+      if (files != null) files else Seq.empty
+    }.map(BlockId.apply)
+  }
+
+  /** Produces a unique block id and File suitable for intermediate results. */
+  def createTempBlock(): (TempBlockId, File) = {
+    var blockId = new TempBlockId(UUID.randomUUID())
+    while (getFile(blockId).exists()) {
+      blockId = new TempBlockId(UUID.randomUUID())
+    }
+    (blockId, getFile(blockId))
+  }
 
   private def createLocalDirs(): Array[File] = {
     logDebug("Creating local directories at root dirs '" + rootDirs + "'")

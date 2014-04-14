@@ -31,6 +31,7 @@ private[spark] class JobWaiter[T](
   private var finishedTasks = 0
 
   // Is the job as a whole finished (succeeded or failed)?
+  @volatile
   private var _jobFinished = totalTasks == 0
 
   def jobFinished = _jobFinished
@@ -63,7 +64,7 @@ private[spark] class JobWaiter[T](
 
   override def jobFailed(exception: Exception): Unit = synchronized {
     _jobFinished = true
-    jobResult = JobFailed(exception, None)
+    jobResult = JobFailed(exception)
     this.notifyAll()
   }
 

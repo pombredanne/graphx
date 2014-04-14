@@ -17,8 +17,8 @@
 
 package org.apache.spark.api.python
 
-import java.io.{OutputStreamWriter, File, DataInputStream, IOException}
-import java.net.{ServerSocket, Socket, SocketException, InetAddress}
+import java.io.{DataInputStream, File, IOException, OutputStreamWriter}
+import java.net.{InetAddress, ServerSocket, Socket, SocketException}
 
 import scala.collection.JavaConversions._
 
@@ -64,7 +64,7 @@ private[spark] class PythonWorkerFactory(pythonExec: String, envVars: Map[String
           startDaemon()
           new Socket(daemonHost, daemonPort)
         }
-        case e => throw e
+        case e: Throwable => throw e
       }
     }
   }
@@ -198,7 +198,7 @@ private[spark] class PythonWorkerFactory(pythonExec: String, envVars: Map[String
           }
         }.start()
       } catch {
-        case e => {
+        case e: Throwable => {
           stopDaemon()
           throw e
         }

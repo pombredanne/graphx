@@ -23,7 +23,6 @@ import org.apache.spark.Logging
 import org.apache.spark.util.Utils
 import org.apache.spark.storage.{BlockId, FileSegment}
 
-
 private[spark] class ShuffleSender(portIn: Int, val pResolver: PathResolver) extends Logging {
 
   val server = new FileServer(pResolver, portIn)
@@ -64,7 +63,7 @@ private[spark] object ShuffleSender {
         val subDirId = (hash / localDirs.length) % subDirsPerLocalDir
         val subDir = new File(localDirs(dirId), "%02x".format(subDirId))
         val file = new File(subDir, blockId.name)
-        return new FileSegment(file, 0, file.length())
+        new FileSegment(file, 0, file.length())
       }
     }
     val sender = new ShuffleSender(port, pResovler)

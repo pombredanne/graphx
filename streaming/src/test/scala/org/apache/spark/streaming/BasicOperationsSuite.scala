@@ -23,21 +23,12 @@ import org.apache.spark.rdd.RDD
 import org.apache.spark.SparkContext._
 
 import util.ManualClock
+import org.apache.spark.{SparkContext, SparkConf}
+import org.apache.spark.streaming.dstream.{WindowedDStream, DStream}
+import scala.collection.mutable.{SynchronizedBuffer, ArrayBuffer}
+import scala.reflect.ClassTag
 
 class BasicOperationsSuite extends TestSuiteBase {
-
-  override def framework() = "BasicOperationsSuite"
-
-  before {
-    System.setProperty("spark.streaming.clock", "org.apache.spark.streaming.util.ManualClock")
-  }
-
-  after {
-    // To avoid Akka rebinding to the same port, since it doesn't unbind immediately on shutdown
-    System.clearProperty("spark.driver.port")
-    System.clearProperty("spark.hostPort")
-  }
-
   test("map") {
     val input = Seq(1 to 4, 5 to 8, 9 to 12)
     testOperation(
@@ -126,7 +117,7 @@ class BasicOperationsSuite extends TestSuiteBase {
   test("groupByKey") {
     testOperation(
       Seq( Seq("a", "a", "b"), Seq("", ""), Seq() ),
-      (s: DStream[String]) => s.map(x => (x, 1)).groupByKey(),
+      (s: DStream[String]) => s.map(x => (x, 1)).groupByKey().mapValues(_.toSeq),
       Seq( Seq(("a", Seq(1, 1)), ("b", Seq(1))), Seq(("", Seq(1, 1))), Seq() ),
       true
     )
@@ -260,7 +251,7 @@ class BasicOperationsSuite extends TestSuiteBase {
       Seq(  )
     )
     val operation = (s1: DStream[String], s2: DStream[String]) => {
-      s1.map(x => (x,1)).cogroup(s2.map(x => (x, "x")))
+      s1.map(x => (x,1)).cogroup(s2.map(x => (x, "x"))).mapValues(x => (x._1.toSeq, x._2.toSeq))
     }
     testOperation(inputData1, inputData2, operation, outputData, true)
   }
@@ -333,7 +324,7 @@ class BasicOperationsSuite extends TestSuiteBase {
 
     val updateStateOperation = (s: DStream[String]) => {
       val updateFunc = (values: Seq[Int], state: Option[Int]) => {
-        Some(values.foldLeft(0)(_ + _) + state.getOrElse(0))
+        Some(values.sum + state.getOrElse(0))
       }
       s.map(x => (x, 1)).updateStateByKey[Int](updateFunc)
     }
@@ -368,7 +359,7 @@ class BasicOperationsSuite extends TestSuiteBase {
       // updateFunc clears a state when a StateObject is seen without new values twice in a row
       val updateFunc = (values: Seq[Int], state: Option[StateObject]) => {
         val stateObj = state.getOrElse(new StateObject)
-        values.foldLeft(0)(_ + _) match {
+        values.sum match {
           case 0 => stateObj.expireCounter += 1 // no new values
           case n => { // has new values, increment and reset expireCounter
             stateObj.counter += n
@@ -387,11 +378,10 @@ class BasicOperationsSuite extends TestSuiteBase {
   }
 
   test("slice") {
-    val ssc = new StreamingContext("local[2]", "BasicOperationSuite", Seconds(1))
+    val ssc = new StreamingContext(conf, Seconds(1))
     val input = Seq(Seq(1), Seq(2), Seq(3), Seq(4))
     val stream = new TestInputStream[Int](ssc, input, 2)
-    ssc.registerInputStream(stream)
-    stream.foreach(_ => {})  // Dummy output stream
+    stream.foreachRDD(_ => {})  // Dummy output stream
     ssc.start()
     Thread.sleep(2000)
     def getInputFromSlice(fromMillis: Long, toMillis: Long) = {
@@ -406,40 +396,31 @@ class BasicOperationsSuite extends TestSuiteBase {
     Thread.sleep(1000)
   }
 
-  test("forgetting of RDDs - map and window operations") {
-    assert(batchDuration === Seconds(1), "Batch duration has changed from 1 second")
+  val cleanupTestInput = (0 until 10).map(x => Seq(x, x + 1)).toSeq
 
-    val input = (0 until 10).map(x => Seq(x, x + 1)).toSeq
+  test("rdd cleanup - map and window") {
     val rememberDuration = Seconds(3)
-
-    assert(input.size === 10, "Number of inputs have changed")
-
     def operation(s: DStream[Int]): DStream[(Int, Int)] = {
       s.map(x => (x % 10, 1))
        .window(Seconds(2), Seconds(1))
        .window(Seconds(4), Seconds(2))
     }
 
-    val ssc = setupStreams(input, operation _)
-    ssc.remember(rememberDuration)
-    runStreams[(Int, Int)](ssc, input.size, input.size / 2)
-
-    val windowedStream2 = ssc.graph.getOutputStreams().head.dependencies.head
-    val windowedStream1 = windowedStream2.dependencies.head
+    val operatedStream = runCleanupTest(conf, operation _,
+      numExpectedOutput = cleanupTestInput.size / 2, rememberDuration = Seconds(3))
+    val windowedStream2 = operatedStream.asInstanceOf[WindowedDStream[_]]
+    val windowedStream1 = windowedStream2.dependencies.head.asInstanceOf[WindowedDStream[_]]
     val mappedStream = windowedStream1.dependencies.head
 
-    val clock = ssc.scheduler.clock.asInstanceOf[ManualClock]
-    assert(clock.time === Seconds(10).milliseconds)
+    // Checkpoint remember durations
+    assert(windowedStream2.rememberDuration === rememberDuration)
+    assert(windowedStream1.rememberDuration === rememberDuration + windowedStream2.windowDuration)
+    assert(mappedStream.rememberDuration ===
+      rememberDuration + windowedStream2.windowDuration + windowedStream1.windowDuration)
 
-    // IDEALLY
-    // WindowedStream2 should remember till 7 seconds: 10, 8,
-    // WindowedStream1 should remember till 4 seconds: 10, 9, 8, 7, 6, 5
-    // MappedStream should remember till 7 seconds:    10, 9, 8, 7, 6, 5, 4, 3,
-
-    // IN THIS TEST
-    // WindowedStream2 should remember till 7 seconds: 10, 8,
+    // WindowedStream2 should remember till 7 seconds: 10, 9, 8, 7
     // WindowedStream1 should remember till 4 seconds: 10, 9, 8, 7, 6, 5, 4
-    // MappedStream should remember till 7 seconds:    10, 9, 8, 7, 6, 5, 4, 3, 2
+    // MappedStream should remember till 2 seconds:    10, 9, 8, 7, 6, 5, 4, 3, 2
 
     // WindowedStream2
     assert(windowedStream2.generatedRDDs.contains(Time(10000)))
@@ -455,5 +436,38 @@ class BasicOperationsSuite extends TestSuiteBase {
     assert(mappedStream.generatedRDDs.contains(Time(10000)))
     assert(mappedStream.generatedRDDs.contains(Time(2000)))
     assert(!mappedStream.generatedRDDs.contains(Time(1000)))
+  }
+
+  test("rdd cleanup - updateStateByKey") {
+    val updateFunc = (values: Seq[Int], state: Option[Int]) => {
+      Some(values.foldLeft(0)(_ + _) + state.getOrElse(0))
+    }
+    val stateStream = runCleanupTest(
+      conf, _.map(_ -> 1).updateStateByKey(updateFunc).checkpoint(Seconds(3)))
+
+    assert(stateStream.rememberDuration === stateStream.checkpointDuration * 2)
+    assert(stateStream.generatedRDDs.contains(Time(10000)))
+    assert(!stateStream.generatedRDDs.contains(Time(4000)))
+  }
+
+  /** Test cleanup of RDDs in DStream metadata */
+  def runCleanupTest[T: ClassTag](
+      conf2: SparkConf,
+      operation: DStream[Int] => DStream[T],
+      numExpectedOutput: Int = cleanupTestInput.size,
+      rememberDuration: Duration = null
+    ): DStream[T] = {
+
+    // Setup the stream computation
+    assert(batchDuration === Seconds(1),
+      "Batch duration has changed from 1 second, check cleanup tests")
+    val ssc = setupStreams(cleanupTestInput, operation)
+    val operatedStream = ssc.graph.getOutputStreams().head.dependencies.head.asInstanceOf[DStream[T]]
+    if (rememberDuration != null) ssc.remember(rememberDuration)
+    val output = runStreams[(Int, Int)](ssc, cleanupTestInput.size, numExpectedOutput)
+    val clock = ssc.scheduler.clock.asInstanceOf[ManualClock]
+    assert(clock.time === Seconds(10).milliseconds)
+    assert(output.size === numExpectedOutput)
+    operatedStream
   }
 }

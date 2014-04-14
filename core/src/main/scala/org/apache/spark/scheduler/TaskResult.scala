@@ -18,13 +18,14 @@
 package org.apache.spark.scheduler
 
 import java.io._
+import java.nio.ByteBuffer
 
 import scala.collection.mutable.Map
+
+import org.apache.spark.SparkEnv
 import org.apache.spark.executor.TaskMetrics
-import org.apache.spark.{SparkEnv}
-import java.nio.ByteBuffer
-import org.apache.spark.util.Utils
 import org.apache.spark.storage.BlockId
+import org.apache.spark.util.Utils
 
 // Task result. Also contains updates to accumulator variables.
 private[spark] sealed trait TaskResult[T]
@@ -35,18 +36,16 @@ case class IndirectTaskResult[T](blockId: BlockId) extends TaskResult[T] with Se
 
 /** A TaskResult that contains the task's return value and accumulator updates. */
 private[spark]
-class DirectTaskResult[T](var value: T, var accumUpdates: Map[Long, Any], var metrics: TaskMetrics)
+class DirectTaskResult[T](var valueBytes: ByteBuffer, var accumUpdates: Map[Long, Any],
+    var metrics: TaskMetrics)
   extends TaskResult[T] with Externalizable {
 
-  def this() = this(null.asInstanceOf[T], null, null)
+  def this() = this(null.asInstanceOf[ByteBuffer], null, null)
 
   override def writeExternal(out: ObjectOutput) {
 
-    val objectSer = SparkEnv.get.serializer.newInstance()
-    val bb = objectSer.serialize(value)
-
-    out.writeInt(bb.remaining())
-    Utils.writeByteBuffer(bb, out)
+    out.writeInt(valueBytes.remaining);
+    Utils.writeByteBuffer(valueBytes, out)
 
     out.writeInt(accumUpdates.size)
     for ((key, value) <- accumUpdates) {
@@ -58,12 +57,10 @@ class DirectTaskResult[T](var value: T, var accumUpdates: Map[Long, Any], var me
 
   override def readExternal(in: ObjectInput) {
 
-    val objectSer = SparkEnv.get.serializer.newInstance()
-
     val blen = in.readInt()
     val byteVal = new Array[Byte](blen)
     in.readFully(byteVal)
-    value = objectSer.deserialize(ByteBuffer.wrap(byteVal))
+    valueBytes = ByteBuffer.wrap(byteVal)
 
     val numUpdates = in.readInt
     if (numUpdates == 0) {
@@ -75,5 +72,10 @@ class DirectTaskResult[T](var value: T, var accumUpdates: Map[Long, Any], var me
       }
     }
     metrics = in.readObject().asInstanceOf[TaskMetrics]
+  }
+
+  def value(): T = {
+    val resultSer = SparkEnv.get.serializer.newInstance()
+    resultSer.deserialize(valueBytes)
   }
 }

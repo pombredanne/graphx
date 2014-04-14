@@ -19,8 +19,8 @@ package org.apache.spark.storage
 
 import java.nio.ByteBuffer
 
-import scala.collection.mutable.StringBuilder
 import scala.collection.mutable.ArrayBuffer
+import scala.collection.mutable.StringBuilder
 
 import org.apache.spark.network._
 
@@ -154,7 +154,7 @@ private[spark] class BlockMessage() {
     println()
     */
     val finishTime = System.currentTimeMillis
-    return Message.createBufferMessage(buffers)
+    Message.createBufferMessage(buffers)
   }
 
   override def toString: String = {

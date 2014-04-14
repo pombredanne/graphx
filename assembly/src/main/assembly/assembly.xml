@@ -39,6 +39,15 @@
     </fileSet>
     <fileSet>
       <directory>
+        ${project.parent.basedir}/sbin/
+      </directory>
+      <outputDirectory>/sbin</outputDirectory>
+      <includes>
+        <include>**/*</include>
+      </includes>
+    </fileSet>
+    <fileSet>
+      <directory>
         ${project.parent.basedir}/bin/
       </directory>
       <outputDirectory>/bin</outputDirectory>
@@ -48,14 +57,11 @@
     </fileSet>
     <fileSet>
       <directory>
-        ${project.parent.basedir}
+        ${project.parent.basedir}/assembly/target/${spark.jar.dir}
       </directory>
-      <outputDirectory>/bin</outputDirectory>
+      <outputDirectory>/</outputDirectory>
       <includes>
-        <include>run-example*</include>
-        <include>spark-class*</include>
-        <include>spark-shell*</include>
-        <include>spark-executor*</include>
+        <include>${spark.jar.basename}</include>
       </includes>
     </fileSet>
   </fileSets>
@@ -78,6 +84,8 @@
       <excludes>
         <exclude>org.apache.hadoop:*:jar</exclude>
         <exclude>org.apache.spark:*:jar</exclude>
+        <exclude>org.apache.zookeeper:*:jar</exclude>
+        <exclude>org.apache.avro:*:jar</exclude>
       </excludes>
     </dependencySet>
   </dependencySets>
